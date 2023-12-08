@@ -1,4 +1,4 @@
-# Scfuzzer: A Fast Smart Contract Fuzzer <a href="https://raw.githubusercontent.com/khulnasoft-lab/scfuzzer/master/scfuzzer.png"><img src="https://raw.githubusercontent.com/khulnasoft-lab/scfuzzer/master/scfuzzer.png" width="75"/></a>
+# Scfuzzer: A Fast Smart Contract Fuzzer
 
 ![Build Status](https://github.com/khulnasoft-lab/scfuzzer/workflows/CI/badge.svg)
 
