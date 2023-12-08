@@ -1,0 +1,128 @@
+name: scfuzzer
+
+author: KhulnaSoft Lab <security@khulnasoft.com>
+maintainer: KhulnaSoft Lab <security@khulnasoft.com>
+
+version: 2.2.1
+
+# https://github.com/haskell/cabal/issues/4739
+ghc-options: -Wall -fno-warn-orphans -O2 -optP-Wno-nonportable-include-path
+
+dependencies:
+  - base
+  - aeson
+  - base16-bytestring
+  - binary
+  - bytestring
+  - code-page
+  - containers
+  - data-bword
+  - data-dword
+  - deepseq
+  - extra
+  - directory
+  - exceptions
+  - filepath
+  - hashable
+  - hevm
+  - html-entities
+  - ListLike
+  - MonadRandom
+  - mtl
+  - optparse-applicative
+  - optics
+  - optics-core
+  - process
+  - random
+  - rosezipper
+  - semver
+  - split
+  - text
+  - transformers
+  - time
+  - unliftio
+  - utf8-string
+  - vector
+  - with-utf8
+  - word-wrap
+  - yaml
+  - http-conduit
+  - html-conduit
+  - xml-conduit
+
+language: GHC2021
+
+default-extensions:
+  - DuplicateRecordFields
+  - LambdaCase
+  - MultiWayIf
+  - NoFieldSelectors
+  - OverloadedLabels
+  - OverloadedRecordDot
+  - OverloadedStrings
+
+library:
+  source-dirs: lib/
+
+when:
+  - condition: "!os(windows)"
+    cpp-options: -DINTERACTIVE_UI
+    dependencies:
+      - brick
+      - unix
+      - vty
+
+executables:
+  scfuzzer:
+    main: Main.hs
+    source-dirs: src/
+    dependencies: scfuzzer
+    ghc-options: -threaded -with-rtsopts=-N
+    when:
+      - condition: (os(linux) || os(windows)) && flag(static)
+        ghc-options:
+          - -optl-static
+      - condition: os(linux) || os(windows)
+        ghc-options:
+          - -O2
+          - -optl-pthread
+      - condition: os(darwin)
+        extra-libraries: c++
+        ld-options: -Wl,-keep_dwarf_unwind
+        ghc-options: -fcompact-unwind
+      - condition: os(windows) && impl(ghc >= 9.4)
+        dependencies: system-cxx-std-lib
+      - condition: os(windows) && impl(ghc < 9.4)
+        extra-libraries: stdc++
+
+tests:
+  scfuzzer-testsuite:
+    main: Spec.hs
+    source-dirs: src/test
+    dependencies:
+      - scfuzzer
+      - tasty
+      - tasty-hunit
+      - tasty-quickcheck
+    when:
+        - condition: (os(linux) || os(windows)) && flag(static)
+          ghc-options:
+            - -optl-static
+        - condition: os(linux) || os(windows)
+          ghc-options:
+            - -O2
+            - -optl-pthread
+        - condition: os(darwin)
+          extra-libraries: c++
+          ld-options: -Wl,-keep_dwarf_unwind
+          ghc-options: -fcompact-unwind
+        - condition: os(windows) && impl(ghc >= 9.4)
+          dependencies: system-cxx-std-lib
+        - condition: os(windows) && impl(ghc < 9.4)
+          extra-libraries: stdc++
+
+flags:
+  static:
+    description: Pass -static to ghc when linking the stack binary.
+    manual: true
+    default: false
