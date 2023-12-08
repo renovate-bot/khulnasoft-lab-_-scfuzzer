@@ -1,7 +1,7 @@
 name: scfuzzer
 
-author: KhulnaSoft Lab <security@khulnasoft.com>
-maintainer: KhulnaSoft Lab <security@khulnasoft.com>
+author: Trail of Bits <scfuzzer-dev@trailofbits.com>
+maintainer: Trail of Bits <scfuzzer-dev@trailofbits.com>
 
 version: 2.2.1
 

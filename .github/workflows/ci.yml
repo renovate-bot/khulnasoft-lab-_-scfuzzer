@@ -1,0 +1,232 @@
+name: CI
+
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+    branches:
+    - master
+
+env:
+  # Tag for cache invalidation
+  CACHE_VERSION: v6
+
+jobs:
+  build:
+    name: Build Scfuzzer on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ fromJSON(matrix.container || '{"image":null}') }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-20.04
+            shell: bash
+            container: "{\"image\": \"elopeztob/alpine-haskell-stack-scfuzzer:ghc-9.4.7\", \"options\": \"--user 1001\"}"
+          - os: macos-latest
+            shell: bash
+          - os: windows-latest
+            shell: msys2 {0}
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Get Packages (macOS)
+        if: runner.os == 'macOS'
+        run: brew install automake
+
+      - name: Get Packages (Windows)
+        uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: CLANG64
+          release: false
+          path-type: minimal
+          update: true
+          install: >-
+            base-devel
+            gmp-devel
+            openssl-devel
+            git
+            unzip
+          pacboy: >-
+            cmake:p
+            ninja:p
+            clang:p
+            lld:p
+            autotools:p
+            gmp:p
+            openssl:p
+
+      - name: Install Stack
+        uses: haskell-actions/setup@v2
+        id: stack
+        if: matrix.container == ''
+        with:
+          ghc-version: '9.4'
+          enable-stack: true
+          stack-version: 'latest'
+
+      - name: Configure Stack environment
+        run: |
+          HOME="${{ (runner.os == 'Windows' && '$(cygpath -m ~)') || '$HOME' }}"
+          mkdir -p "$STACK_ROOT"
+          { echo "extra-include-dirs:";
+            echo "- $HOME/.local/include";
+            echo "$EXTRA_INCLUDE_WIN";
+            echo;
+            echo "extra-lib-dirs:";
+            echo "- $HOME/.local/lib";
+            echo "$EXTRA_LIB_WIN";
+            echo;
+            echo "ghc-options:";
+            echo -n '  "$locals": -Werror'
+            "$REPLACE_LINKER_WIN" && echo ' -pgml=C:/msys64/clang64/bin/clang.exe -pgml-supports-no-pie' || echo;
+            echo;
+            "$SKIP_MSYS" && echo "skip-msys: true" || true
+          } >> "$STACK_ROOT/config.yaml"
+          cat "$STACK_ROOT/config.yaml"
+        env:
+          STACK_ROOT: ${{ steps.stack.outputs.stack-root || '/etc/stack' }}
+          EXTRA_INCLUDE_WIN: ${{ (runner.os == 'Windows' && '- C:/msys64/clang64/include') || '' }}
+          EXTRA_LIB_WIN: ${{ (runner.os == 'Windows' && '- C:/msys64/clang64/lib') || '' }}
+          REPLACE_LINKER_WIN: ${{ (runner.os == 'Windows' && 'true') || 'false' }}
+          SKIP_MSYS: ${{ (runner.os == 'Windows' && 'true') || 'false' }}
+
+      - name: Configure Haskell paths (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          HASKELL_PATHS="$(cygpath -u "$GHC_PATH"):$(cygpath -u "$CABAL_PATH"):$(cygpath -u "$STACK_PATH")"
+          echo "HASKELL_PATHS=$HASKELL_PATHS" >> "$GITHUB_ENV"
+        env:
+          GHC_PATH: ${{ steps.stack.outputs.ghc-path }}
+          CABAL_PATH: ${{ steps.stack.outputs.cabal-path }}
+          STACK_PATH: ${{ steps.stack.outputs.stack-path }}
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Local
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.local
+            C:\msys64\home\runneradmin\.local
+          key: ${{ runner.os }}-local-${{ env.CACHE_VERSION }}-${{ hashFiles('.github/scripts/install-*') }}
+
+      - name: Cache Stack & Cabal
+        uses: actions/cache@v3
+        with:
+          path: |
+            .stack-work
+            ${{ steps.stack.outputs.cabal-store || '~/.cabal' }}/*
+            ${{ steps.stack.outputs.stack-root || '~/.stack' }}/*
+            !${{ steps.stack.outputs.stack-root || '~/.stack' }}/pantry/hackage/*.tar
+            !${{ steps.stack.outputs.stack-root || '~/.stack' }}/pantry/hackage/*.tar.gz
+            !${{ steps.stack.outputs.stack-root || '~/.stack' }}/config.yaml
+          key: ${{ runner.os }}-stack-${{ env.CACHE_VERSION }}-${{ hashFiles('package.yaml', 'stack.yaml') }}
+
+      - name: Build Libraries
+        run: |
+          .github/scripts/install-libsecp256k1.sh
+          .github/scripts/install-libff.sh
+        env:
+          HOST_OS: ${{ runner.os }}
+
+      - name: Build Dependencies
+        run: |
+          export PATH="$HASKELL_PATHS:$PATH"
+          stack build --ghc-options="-Werror" --only-dependencies
+
+      - name: Build and install scfuzzer
+        run: |
+          export PATH="$HASKELL_PATHS:$PATH"
+          stack install --flag scfuzzer:static --ghc-options="-Werror"
+
+      - name: Amend and compress binaries (macOS)
+        if: runner.os == 'macOS'
+        run: .github/scripts/build-macos-release.sh
+
+      - name: Compress binary (Linux)
+        if: runner.os == 'Linux'
+        run: GZIP=-9 tar -czf scfuzzer.tar.gz -C $HOME/.local/bin/ scfuzzer
+
+      - name: Compress binary (Windows)
+        if: runner.os == 'Windows'
+        run: GZIP=-9 tar -czf scfuzzer.tar.gz -C $APPDATA/local/bin/ scfuzzer.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: scfuzzer-${{ runner.os }}
+          path: scfuzzer.tar.gz
+
+      - name: Build and copy test suite
+        if: runner.os != 'macOS'
+        run: |
+          export PATH="$HASKELL_PATHS:$PATH"
+          stack build --flag scfuzzer:static --test --no-run-tests --ghc-options="-Werror"
+          cp "$(find "$PWD" -name 'scfuzzer-testsuite*' -type f)" .
+
+      - name: Upload testsuite
+        if: runner.os != 'macOS'
+        uses: actions/upload-artifact@v3
+        with:
+          name: scfuzzer-testsuite-${{ runner.os }}
+          path: scfuzzer-testsuite*
+
+
+  test:
+    name: Test with solc ${{ matrix.solc }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: build
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        solc:
+          - "0.4.25"
+          - "0.5.7"
+          - "0.6.12"
+          - "0.7.5"
+        include:
+          - solc: "0.6.12"
+            experimental: true
+          - solc: "0.7.5"
+            experimental: true
+          - os: windows-latest
+            experimental: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.8'
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          .github/scripts/install-solc.sh
+          .github/scripts/install-khulnasoft-compile.sh
+        env:
+          HOST_OS: ${{ runner.os }}
+          SOLC_VER: ${{ matrix.solc }}
+
+      - name: Download testsuite
+        uses: actions/download-artifact@v3
+        with:
+         name: scfuzzer-testsuite-${{ runner.os }}
+
+      - name: Test
+        run: |
+          solc-select use ${{ matrix.solc }}
+          chmod +x scfuzzer-testsuite*
+          ./scfuzzer-testsuite*
